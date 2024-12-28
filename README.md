@@ -1,5 +1,9 @@
 # unity-overwriter
 
+以下のライブラリに対して以下の追加機能を入れています
++ フォルダごと上書きができる機能を追加
+
+
 ![unity-overwriter](https://amagamina.jp/wp-content/uploads/2019/07/overwriter-test.gif)
   
 Unityにアセットを追加する際に上書きを可能にする拡張です。本パッケージをそのままAssets以下の任意の場所に配置するだけで動作します。
