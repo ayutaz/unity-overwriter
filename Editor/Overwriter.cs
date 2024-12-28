@@ -2,6 +2,7 @@
 unity-overwriter
 
 Copyright (c) 2019 ina-amagami (ina@amagamina.jp)
+Copyright (c) 2024 ayutaz
 
 This software is released under the MIT License.
 https://opensource.org/licenses/mit-license.php
@@ -19,188 +20,182 @@ public class Overwriter : AssetPostprocessor
 {
     private class FilePath
     {
-        public string Path;
-        public string RelativePath; // ルートからの相対パス
+        public string FullPath;      // フルパス（プロジェクトフォルダからのパス）
+        public string RelativePath;  // Assetsフォルダからの相対パス
         public string FileName;
 
-        public FilePath(string path, string relativePath)
+        public FilePath(string fullPath)
         {
-            Path = path;
-            RelativePath = relativePath;
-            FileName = System.IO.Path.GetFileName(path);
+            FullPath = fullPath;
+            RelativePath = FullPath.Substring(Application.dataPath.Length - "Assets".Length).Replace('\\', '/');
+            FileName = System.IO.Path.GetFileName(fullPath);
         }
     }
 
-    private class ExistAsset
-    {
-        public FilePath Source;
-        public FilePath Imported;
-
-        public ExistAsset(FilePath source, FilePath imported)
-        {
-            Source = source;
-            Imported = imported;
-        }
-    }
-
-    const string SourceExistFormat = "「{0}」と「{1}」のファイル内容が完全一致しているため、置き換えツールの動作を停止します。\n本当にインポートしますか？";
+    private static readonly List<string> importedFolderPaths = new List<string>();
 
     static void OnPostprocessAllAssets(
       string[] importedAssets,
       string[] deletedAssets,
       string[] movedAssets,
-      string[] movedFromPath)
+      string[] movedFromAssetPaths)
     {
-        int count = importedAssets.Length;
-        if (count == 0 || Event.current == null || Event.current.type != EventType.DragPerform)
+        if (Event.current == null || Event.current.type != EventType.DragPerform)
         {
             return;
         }
 
-        // .metaファイルを除外
-        List<string> dragAndDropPaths = new List<string>(DragAndDrop.paths);
-        dragAndDropPaths.RemoveAll(path => path.EndsWith(".meta"));
-        if (dragAndDropPaths.Count == 0)
-        {
-            return;
-        }
-
-        // ドラッグ＆ドロップされたパスを展開（フォルダ内のすべてのファイルを取得）
-        List<FilePath> sourcePaths = new List<FilePath>();
-        foreach (string path in dragAndDropPaths)
-        {
-            if (Directory.Exists(path))
-            {
-                string basePath = path;
-                string[] files = Directory.GetFiles(path, "*.*", SearchOption.AllDirectories);
-                foreach (string file in files)
-                {
-                    if (!file.EndsWith(".meta"))
-                    {
-                        string relativePath = file.Substring(basePath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                        sourcePaths.Add(new FilePath(file, relativePath));
-                    }
-                }
-            }
-            else if (File.Exists(path))
-            {
-                sourcePaths.Add(new FilePath(path, Path.GetFileName(path)));
-            }
-        }
-
-        // インポートされたアセットを展開（フォルダ内のすべてのファイルを取得）
-        List<FilePath> importedPaths = new List<FilePath>();
+        // インポートされたアセットのパスをフルパスに変換
+        List<FilePath> importedFilePaths = new List<FilePath>();
         foreach (string assetPath in importedAssets)
         {
-            string fullPath = Path.Combine(Application.dataPath.Replace("Assets", ""), assetPath);
+            if (assetPath.EndsWith(".meta"))
+                continue;
+
+            string fullPath = Path.GetFullPath(assetPath);
             if (Directory.Exists(fullPath))
             {
-                string basePath = fullPath;
+                importedFolderPaths.Add(assetPath);
                 string[] files = Directory.GetFiles(fullPath, "*.*", SearchOption.AllDirectories);
                 foreach (string file in files)
                 {
-                    if (!file.EndsWith(".meta"))
-                    {
-                        string relativePath = file.Substring(basePath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                        string assetRelativePath = assetPath + "/" + relativePath.Replace('\\', '/');
-                        importedPaths.Add(new FilePath(assetRelativePath, relativePath));
-                    }
+                    if (file.EndsWith(".meta"))
+                        continue;
+                    importedFilePaths.Add(new FilePath(file));
                 }
             }
             else if (File.Exists(fullPath))
             {
-                importedPaths.Add(new FilePath(assetPath, Path.GetFileName(assetPath)));
+                importedFilePaths.Add(new FilePath(fullPath));
             }
         }
 
-        // 以下、既存のロジックを相対パスを考慮して処理する
-        // 中略（既存の処理ロジックを相対パス対応版に修正）
+        if (importedFilePaths.Count == 0)
+            return;
 
-        // ソースファイルとインポートされたファイルで一致するものを処理
-        List<ExistAsset> existAssets = new List<ExistAsset>();
-        foreach (var source in sourcePaths)
+        // ドラッグ＆ドロップされた元のパスを取得
+        List<FilePath> sourceFilePaths = new List<FilePath>();
+        foreach (string path in DragAndDrop.paths)
         {
-            foreach (var imported in importedPaths)
+            if (path.EndsWith(".meta"))
+                continue;
+
+            if (Directory.Exists(path))
             {
-                if (source.RelativePath == imported.RelativePath)
+                string[] files = Directory.GetFiles(path, "*.*", SearchOption.AllDirectories);
+                foreach (string file in files)
                 {
-                    existAssets.Add(new ExistAsset(source, imported));
-                    break;
+                    if (file.EndsWith(".meta"))
+                        continue;
+                    sourceFilePaths.Add(new FilePath(file));
                 }
             }
+            else if (File.Exists(path))
+            {
+                sourceFilePaths.Add(new FilePath(path));
+            }
+        }
+
+        // フォルダ名のマッピングを作成
+        Dictionary<string, string> folderNameMapping = new Dictionary<string, string>();
+        foreach (string folderPath in importedFolderPaths)
+        {
+            string folderName = Path.GetFileName(folderPath);
+            string parentFolderPath = Path.GetDirectoryName(folderPath);
+            string existingFolderPath = Path.Combine(parentFolderPath, folderName);
+            if (AssetDatabase.IsValidFolder(existingFolderPath))
+            {
+                // Unityがフォルダ名を変えた場合（末尾に数字を付加）
+                string newFolderName = Path.GetFileNameWithoutExtension(folderPath);
+                if (newFolderName != folderName)
+                {
+                    folderNameMapping[folderPath] = existingFolderPath;
+                }
+            }
+        }
+
+        // 相対パスをキーにしてインポートされたファイルを辞書に格納
+        Dictionary<string, FilePath> importedFilesDict = new Dictionary<string, FilePath>();
+        foreach (var importedFile in importedFilePaths)
+        {
+            importedFilesDict[importedFile.RelativePath] = importedFile;
         }
 
         // 上書き処理
-        // （既存の上書き処理ロジックを使用）
+        bool isFirst = true;
+        bool applyAll = false;
+        int overwriteOption = 0; // 0:置き換え, 1:中止, 2:両方残す
 
-        // 以下、ファイルの上書き処理を相対パスを考慮して行う
-        foreach (var exist in existAssets)
+        foreach (var sourceFile in sourceFilePaths)
         {
-            string importedPath = exist.Imported.Path;
-            string existingAssetPath = Path.Combine("Assets", exist.Imported.RelativePath).Replace('\\', '/');
-
-            int result = EditorUtility.DisplayDialogComplex(
-                existingAssetPath,
-                "同じ名前のアセットが既に存在します。アセットを置き換えますか？",
-                "置き換える",
-                "中止",
-                "両方とも残す");
-
-            if (result == 0)
+            // 対応するインポートされたファイルを探す
+            string relativePath = sourceFile.RelativePath;
+            if (importedFilesDict.TryGetValue(relativePath, out FilePath importedFile))
             {
-                FileUtil.ReplaceFile(importedPath, existingAssetPath);
-                AssetDatabase.DeleteAsset(importedPath);
-                AssetDatabase.ImportAsset(existingAssetPath);
-            }
-            else if (result == 1)
-            {
-                AssetDatabase.DeleteAsset(importedPath);
-            }
-            // 「両方とも残す」の場合は何もしない
-        }
-    }
+                string existingAssetPath = importedFile.RelativePath;
+                string existingFullPath = Path.Combine(Application.dataPath.Replace("Assets", ""), existingAssetPath);
 
-    static bool FileCompare(string file1, string file2)
-    {
-        if (file1 == file2)
-        {
-            return true;
-        }
-
-        FileStream fs1 = new FileStream(file1, FileMode.Open);
-        FileStream fs2 = new FileStream(file2, FileMode.Open);
-        int byte1;
-        int byte2;
-        bool ret = false;
-
-        try
-        {
-            if (fs1.Length == fs2.Length)
-            {
-                do
+                if (!File.Exists(existingFullPath))
                 {
-                    byte1 = fs1.ReadByte();
-                    byte2 = fs2.ReadByte();
+                    // 既存のファイルがない場合はスキップ
+                    continue;
                 }
-                while ((byte1 == byte2) && (byte1 != -1));
 
-                if (byte1 == byte2)
+                if (!applyAll)
                 {
-                    ret = true;
+                    overwriteOption = EditorUtility.DisplayDialogComplex(
+                        existingAssetPath,
+                        "同じ名前のアセットが既に存在します。アセットを置き換えますか？",
+                        "置き換える",
+                        "中止",
+                        "両方とも残す");
+                }
+
+                if (overwriteOption == 0)
+                {
+                    // 置き換える
+                    FileUtil.ReplaceFile(importedFile.FullPath, existingFullPath);
+                    AssetDatabase.ImportAsset(existingAssetPath);
+                    File.Delete(importedFile.FullPath);
+                    File.Delete(importedFile.FullPath + ".meta");
+                }
+                else if (overwriteOption == 1)
+                {
+                    // 中止
+                    File.Delete(importedFile.FullPath);
+                    File.Delete(importedFile.FullPath + ".meta");
+                }
+                else
+                {
+                    // 両方とも残す（何もしない）
+                }
+
+                if (isFirst)
+                {
+                    if (EditorUtility.DisplayDialog(
+                        "確認",
+                        "同じ操作を以降すべてに適用しますか？",
+                        "はい",
+                        "いいえ"))
+                    {
+                        applyAll = true;
+                    }
+                    isFirst = false;
                 }
             }
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogError(e);
-            return false;
-        }
-        finally
-        {
-            fs1.Close();
-            fs2.Close();
+            else
+            {
+                // 新しいファイルの場合は特に処理しない
+            }
         }
 
-        return ret;
+        // 不要になったフォルダを削除
+        foreach (var kvp in folderNameMapping)
+        {
+            string importedFolderPath = kvp.Key;
+            AssetDatabase.DeleteAsset(importedFolderPath);
+        }
+
+        AssetDatabase.Refresh();
     }
 }
